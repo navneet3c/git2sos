@@ -15,44 +15,45 @@ import sys
 import time
 
 class bcolors:
-    GRAY = '\033[90m' if sys.stdout.isatty() else ''
-    RED = '\033[31m' if sys.stdout.isatty() else ''
-    GREEN = '\033[32m' if sys.stdout.isatty() else ''
-    YELLOW = '\033[33m' if sys.stdout.isatty() else ''
-    BLUE = '\033[34m' if sys.stdout.isatty() else ''
-    MAGENTA = '\033[35m' if sys.stdout.isatty() else ''
-    CYAN = '\033[36m' if sys.stdout.isatty() else ''
-    BOLD = '\033[1m' if sys.stdout.isatty() else ''
-    UNDERLINE = '\033[4m' if sys.stdout.isatty() else ''
-    ENDC = '\033[0m' if sys.stdout.isatty() else ''
+    GRAY = '\033[90m' if sys.stdout.isatty() and 'VIMRUNTIME' not in os.environ else ''
+    RED = '\033[31m' if sys.stdout.isatty() and 'VIMRUNTIME' not in os.environ else ''
+    # GREEN = '\033[32m' if sys.stdout.isatty() and 'VIMRUNTIME' not in os.environ else ''
+    YELLOW = '\033[33m' if sys.stdout.isatty() and 'VIMRUNTIME' not in os.environ else ''
+    # BLUE = '\033[34m' if sys.stdout.isatty() and 'VIMRUNTIME' not in os.environ else ''
+    # MAGENTA = '\033[35m' if sys.stdout.isatty() and 'VIMRUNTIME' not in os.environ else ''
+    # CYAN = '\033[36m' if sys.stdout.isatty() and 'VIMRUNTIME' not in os.environ else ''
+    # BOLD = '\033[1m' if sys.stdout.isatty() and 'VIMRUNTIME' not in os.environ else ''
+    # UNDERLINE = '\033[4m' if sys.stdout.isatty() and 'VIMRUNTIME' not in os.environ else ''
+    ENDC = '\033[0m' if sys.stdout.isatty() and 'VIMRUNTIME' not in os.environ else ''
 
 class SOSWrapper:
     def __init__(self):
         self.cache_path = ''
         self.wa_data_file = 'wa_data.json'
         self.diff_tool = os.environ['GIT_DIFF_TOOL'] if 'GIT_DIFF_TOOL' in os.environ else 'tkdiff'
-        self.ign_filelist = ['./.gutctags']
+        self.merge_tool = os.environ['GIT_MERGE_TOOL'] if 'GIT_MERGE_TOOL' in os.environ else 'meld'
+        self.ign_file_suffix = ['/.gutctags', '/out', '.swp']
 
         self.commands = {
             '-h': self.help_myscript,
-            'add': self.add_sos,            # not a sos feature
-            #'blame': self.blame_sos,       # not a sos feature
-            'checkout': self.checkout_sos,
+            'add': self.add_sos,            # extend sos command
+            #'blame': self.blame_sos,       # not a sos command
+            'checkout': self.checkout_sos,  # aggregate SOS commands
             'cleanup': self.cleanup_sos,    # not a git command
             'clone': self.clone_sos,
             'declone': self.declone_sos,    # not a git command
-            'diff': self.diff_sos,
-            'discard': self.discard_sos,    # not a git command
+            'diff': self.diff_sos,          # aggregate SOS commands
+            'discard': self.discard_sos,    # not a git command, extend SOS command
             'fetch': self.fetch_sos,
             'help': self.help_sos,
-            'log': self.log_sos,
+            'log': self.log_sos,            # aggregate SOS commands
             'merge': self.merge_sos,
             'mv': self.mv_sos,
             'pull': self.pull_sos,
-            'push': self.push_sos,
+            'push': self.push_sos,          # aggregate sos commands
             'rm': self.rm_sos,
-            'stash': self.stash_sos,
-            'status': self.status_sos,
+            'stash': self.stash_sos,        # not a sos command
+            'status': self.status_sos,      # extend sos command
             # Add more commands as needed
         }
 
@@ -64,6 +65,9 @@ Few of the SOS commands which cause changes to files are printed as output.
 
 Command arguments should be provided like '-argval' instead of '-arg val' so
 that they can be properly skipped/identified.
+
+This script treats check-in date/time as the changelist/commit-id, since SOS
+does not provide any other 'revision-id' with easy usage.
 
 List of possible usages:
   script.py add [<extra args ...>] <filename> <filename>
@@ -131,23 +135,33 @@ List of possible usages:
   script.py log '<YYYY/MM/DD> <HH:MM:SS>'
   script.py log <filename> <filename> [<extra args ...>]
       Shows history of file or project. By default shows log of last 5
-      days and lists all file change/modification activities.
+      days and lists all file change/modification activities for directories.
+      If the given arguments are files, then entire history is shown.
 
       If no filename is given, then shows history of project.
       If only time is given, then shows the revision(s) for that time.
-      If filename is given then shows history of the file.
+      If filename is given then shows history of the file/directory.
 
       Extra args are passed on to SOS if applicable.
       e.g. -from-7 shows log from last 7 days.
       e.g. -userprojeng shows log only from user 'projeng'.
 
   script.py merge
-      Feature TBD
+  script.py merge <filename> <filename>
+      Merge checked-out files with latest revision, and record the merge so
+      that these files can be checked-in to SOS.
+
+      If no argument is given, all the checked-out files for which new version
+      exists, will be tried for merge with latest revision of RSO.
+      If some filenames are given, then only those will be merged.
+
 
   script.py mv <filename> <filename> <target>
+  script.py mv <filename> <new_filename>
       Saves the state of the given files to move to the target directory.
       Later when the push command is executed then the move in SOS server
       is actually performed.
+      If the filename is in renamed, then records it.
 
       If a file is moved multiple times, only the latest move is recorded.
       No file validity checks are done and it is assumed that the SOS command
@@ -227,7 +241,7 @@ Bye.''')
             obj_status = self.execute_sos_command(['soscmd', 'objstatus'], [arg], ret_text=True, quiet=True)
             obj_status = obj_status[0].split() if len(obj_status) == 1 else []
             if len(obj_status) != 2: # cmd returns file status and type
-                print(f'Skipping \'{arg}\' because stat returned unexpected status.')
+                print(f'Skipping \'{arg}\' for add because stat returned unexpected status.')
 
             if obj_status[0] in ['2']: # unmanaged file
                 rel_path = os.path.relpath(arg, wa_root)
@@ -237,12 +251,12 @@ Bye.''')
                 else:
                     print(f'Skipping \'{arg}\' for create as it is already listed.')
             elif obj_status[0] in ['3', '6']: # already checked out
-                print(f'Skipping \'{arg}\' because it is already checked out.')
+                print(f'Skipping \'{arg}\' for add because it is already checked out.')
             elif obj_status[0] in ['4', '5']: # valid path checked-in
                 new_args.append(arg)
                 print(f'Adding \'{arg}\' for checkout.')
             else: # including 0 [file not part of workarea] and 1 [does not exist]
-                print(f'Skipping \'{arg}\' as the file is not valid.')
+                print(f'Skipping \'{arg}\' for add as the file is not valid.')
 
         # save file status data
         with open(wa_data_file_path, 'w') as cache_file:
@@ -275,7 +289,7 @@ Bye.''')
         wa_root = self.get_wa_root_path()
         unm_filelist = self.execute_sos_command(['soscmd', 'status'], ['-f%P', '-sunm'], ret_text=True, quiet=True)
         for file_path in unm_filelist:
-            if file_path.startswith('*') or file_path in self.ign_filelist:
+            if file_path.startswith('*') or file_path.endswith(tuple(self.ign_file_suffix)):
                 continue
             print(f'Removing file #\'{file_path}\'.')
             file_path = os.path.join(wa_root, file_path)
@@ -289,7 +303,7 @@ Bye.''')
 
     def clone_sos(self, args):
         if len(args) == 1:
-            self.execute_sos_command(['soscmd', 'newworkarea'], [os.environ['SOS_SERVER'], os.environ['SOS_PROJECT'], args[0], '-LCACHED'])
+            self.execute_sos_command(['soscmd', 'newworkarea'], [os.environ['MRVL_PROJECT'], os.environ['MRVL_PROJECT'], args[0], '-LCACHED'])
         elif len(args) >= 3:
             self.execute_sos_command(['soscmd', 'newworkarea'], [args.pop(0), args.pop(0), args.pop(0), '-LCACHED'] + args)
         else:
@@ -351,8 +365,8 @@ Bye.''')
             if len(file_data) > 2:
                 tmp_filepath1 = self.generate_temp_filename() + f'__{file_name}.{file_data[1]}'
                 tmp_filepath2 = self.generate_temp_filename() + f'__{file_name}.{file_data[2]}'
-                self.execute_sos_command(['soscmd', 'exportrev'], [f'{file_path}/{file_data[1]}', f'-out{tmp_filepath1}'], quiet=True)
-                self.execute_sos_command(['soscmd', 'exportrev'], [f'{file_path}/{file_data[2]}', f'-out{tmp_filepath2}'], quiet=True)
+                self.execute_sos_command(['soscmd', 'exportrev'], [f'{file_path}/#/{file_data[1]}', f'-out{tmp_filepath1}'], quiet=True)
+                self.execute_sos_command(['soscmd', 'exportrev'], [f'{file_path}/#/{file_data[2]}', f'-out{tmp_filepath2}'], quiet=True)
             else:
                 tmp_filepath1 = self.generate_temp_filename() + f'__{file_name}'
                 tmp_filepath2 = file_path
@@ -376,7 +390,8 @@ Bye.''')
 
         new_args = []
         new_dir_args = []
-        paths_to_remove = []
+        files_to_remove = []
+        dirs_to_remove = []
         for arg in args:
             if arg.startswith('-'):
                 new_args.append(arg)
@@ -399,24 +414,36 @@ Bye.''')
             rel_path = os.path.relpath(arg, wa_root)
             if os.path.isdir(rel_path):
                 rel_path += '/'
-            paths_to_remove.append(rel_path)
+                dirs_to_remove.append(rel_path)
+            else:
+                files_to_remove.append(rel_path)
 
         # clean up the local file status
         for key in ['create', 'delete']:
             if key not in wa_data['file_status']:
                 continue
             for file in wa_data['file_status'][key]:
-                if file.startswith(tuple(paths_to_remove)):
+                if file in files_to_remove or file.startswith(tuple(dirs_to_remove)):
                     print(f'Removing #\'{file}\' from {key} list.')
                     wa_data['file_status'][key].remove(file)
-        for key in ['move']: # live with the 5 level nest below
+        for key in ['move']: # live with the 4 level nest below
             if key not in wa_data['file_status']:
                 continue
             for subpath in wa_data['file_status'][key]:
                 for file in wa_data['file_status'][key][subpath]:
-                    if file.startswith(tuple(paths_to_remove)):
+                    if file in files_to_remove or file.startswith(tuple(dirs_to_remove)):
                         print(f'Removing #\'{file}\' from {key} list.')
                         wa_data['file_status'][key][subpath].remove(file)
+        for key in ['rename']:
+            if key not in wa_data['file_status']:
+                continue
+            files_to_del = []
+            for file in wa_data['file_status'][key]:
+                if file in files_to_remove or file.startswith(tuple(dirs_to_remove)):
+                    print(f'Removing #\'{file}\' from {key} list.')
+                    files_to_del.append(file)
+            for file in files_to_del:
+                del wa_data['file_status'][key][file]
 
         # save file status data
         with open(wa_data_file_path, 'w') as cache_file:
@@ -429,12 +456,21 @@ Bye.''')
         self.execute_sos_command(['soscmd', 'update'], ['-i', '-pr'] + args)
 
     def help_sos(self, args):
-        self.execute_sos_command(['soscmd', 'help'], args)
+        help_txt = self.execute_sos_command(['soscmd', 'help'], args, ret_text=True, quiet=True)
+        help_txt = '\n'.join(help_txt)
+        if sys.stdout.isatty():
+            tmp_filepath = self.generate_temp_filename()
+            with open(tmp_filepath, 'w') as tmp_file:
+                tmp_file.write(help_txt)
+            subprocess.call(['less', '-R', tmp_filepath])
+            os.remove(tmp_filepath)
+        else:
+            print(help_txt, end='')
 
     def log_sos(self, args):
-        user_set_arg_cmd, user_set_arg_from = (False,) * 2
+        user_set_arg_cmd, user_set_arg_from, use_history_cmd = (False,) * 3
         new_args = []
-        for idx, arg in enumerate(args):
+        for arg in args:
             if arg.startswith('-cmd'):
                 user_set_arg_cmd = True
                 new_args.append(arg)
@@ -453,12 +489,53 @@ Bye.''')
             else:
                 new_args.append(arg)
         args = new_args
+        arg_has_file, arg_has_nonfile = (False,) * 2
+        for arg in args:
+            if arg.startswith('-'):
+                continue
+            if os.path.isfile(arg):
+                arg_has_file = True
+            elif os.path.isdir(arg):
+                arg_has_nonfile = True
 
-        if not user_set_arg_cmd:
-            args[:0] = ['-cmdcreate', '-cmdci', '-cmddelete', '-cmdrename', '-cmdmerge', '-cmdmove']
-        if not user_set_arg_from:
-            args[:0] = ['-from-5']
-        log_data = self.execute_sos_command(['soscmd', 'audit'], ['-f%date %user %cmd %obj %rev %summary', '-sfo', '-group'] + args, ret_text=True, quiet=True)
+        log_data = []
+        if arg_has_file and not arg_has_nonfile:
+            if not user_set_arg_cmd:
+                args[:0] = ['-cmdcreate', '-cmdci']
+            hist_data = self.execute_sos_command(['soscmd', 'history'], ['-fs'] + args, ret_text=True, quiet=True)
+            log_data_d = {}
+            file_name = None
+            for line in hist_data:
+                if line.startswith('History of:'):
+                    line = line.split(':', 1)
+                    file_name = line[1].strip()
+                elif line.startswith('Action:'):
+                    log_attrs = {}
+                    while line:
+                        if line.startswith('Log:'):
+                            file_attr = [line]
+                            line = None
+                        else:
+                            file_attr = line.split(' | ', 1)
+                            line = file_attr[1] if len(file_attr) > 1 else None
+                        attr = file_attr[0].split(':', 1)
+                        log_attrs[attr[0].strip()] = attr[1].strip()
+                    log_data_d_keystr = f'{log_attrs["At time"]} {log_attrs["By"]} checkin 1 {log_attrs["Log"]}'
+                    log_data_d_valstr = f' {log_attrs["At time"]} {log_attrs["By"]} {log_attrs["Action"]} {file_name} {log_attrs["Revision"]} {log_attrs["Log"]}'
+                    if log_data_d_keystr in log_data_d:
+                        log_data_d[log_data_d_keystr].append(log_data_d_valstr)
+                    else:
+                        log_data_d[log_data_d_keystr] = [log_data_d_valstr]
+            for key in sorted(log_data_d.keys(), reverse=True):
+                log_data.append(key)
+                for file in log_data_d[key]:
+                    log_data.append(file)
+        else:
+            if not user_set_arg_cmd:
+                args[:0] = ['-cmdcreate', '-cmdci', '-cmddelete', '-cmdrename', '-cmdmerge', '-cmdmove']
+            if not user_set_arg_from:
+                args[:0] = ['-from-5']
+            log_data = self.execute_sos_command(['soscmd', 'audit'], ['-f%date %user %cmd %obj %rev %summary', '-sfo', '-group'] + args, ret_text=True, quiet=True)
 
         log_text = ''
         for line in log_data:
@@ -483,7 +560,30 @@ Bye.''')
             print(log_text, end='')
 
     def merge_sos(self, args):
-        print(f'Feature TBD')
+        wa_root = self.get_wa_root_path()
+        cur_rso = self.execute_sos_command(['soscmd', 'query'], ['rso'], ret_text=True, quiet=True)
+        cur_rso = cur_rso[0] if len(cur_rso) else 'main'
+        print(f'Merging files with \'{cur_rso}\'.')
+
+        cur_filelist = self.execute_sos_command(['soscmd', 'status'], ['-f%V %P', '-sco', '-sand', '-snt'] + args, ret_text=True, quiet=True)
+        for file_data in cur_filelist:
+            if file_data.startswith('*'):
+                continue
+            file_data = file_data.split()
+            file_ver = file_data[0]
+            file_relpath = file_data[1]
+            file_relpath = os.path.relpath(os.path.join(wa_root, file_relpath), os.getcwd())
+            file_name = os.path.basename(file_relpath)
+
+            base_filepath = self.generate_temp_filename() + f'__{file_name}.{file_ver}'
+            remote_filepath = self.generate_temp_filename() + f'__{file_name}.{cur_rso}'
+            self.execute_sos_command(['soscmd', 'exportrev'], [f'{file_relpath}', f'-out{base_filepath}'], quiet=True)
+            self.execute_sos_command(['soscmd', 'exportrev'], [f'{file_relpath}/#/{cur_rso}', f'-out{remote_filepath}'], quiet=True)
+            print(f'Merging \'{file_relpath}\'.')
+            subprocess.call([self.merge_tool, base_filepath, file_relpath, remote_filepath, '--auto-merge'], stdout=subprocess.DEVNULL)
+            os.remove(base_filepath)
+            os.remove(remote_filepath)
+            self.execute_sos_command(['soscmd', 'merge'], ['-mm', f'-rev{cur_rso}', file_relpath])
 
     def mv_sos(self, args):
         self.check_args_count(args, min=2)
@@ -495,20 +595,35 @@ Bye.''')
             with open(wa_data_file_path, 'r') as cache_file:
                 wa_data = json.load(cache_file)
         wa_root = self.get_wa_root_path()
-        target_dir = os.path.relpath(args.pop(), wa_root)
-        self.init_json_hier(wa_data, list, ['file_status', 'move', target_dir])
+        target_dir_relpath = args[-1]
+        if os.path.isdir(target_dir_relpath): # process move to dir
+            args.pop()
+            self.init_json_hier(wa_data, list, ['file_status', 'move', target_dir])
+            target_dir = os.path.relpath(target_dir_relpath, wa_root)
 
-        for arg in args:
-            rel_path = os.path.relpath(arg, wa_root)
-            if rel_path not in wa_data['file_status']['move'][target_dir]:
-                # remove this path from all other records
-                for target_dir_tmp in wa_data['file_status']['move']:
-                    if rel_path in wa_data['file_status']['move'][target_dir_tmp]:
-                        wa_data['file_status']['move'][target_dir_tmp].remove(rel_path)
-                wa_data['file_status']['move'][target_dir].append(rel_path)
-                print(f'Adding \'{arg}\' for move to #\'./{target_dir}\'.')
-            else:
-                print(f'Skipping \'{arg}\' for move as it is already listed.')
+            for arg in args:
+                rel_path = os.path.relpath(arg, wa_root)
+                if rel_path not in wa_data['file_status']['move'][target_dir]:
+                    # remove this path from all other records
+                    for target_dir_tmp in wa_data['file_status']['move']:
+                        if rel_path in wa_data['file_status']['move'][target_dir_tmp]:
+                            wa_data['file_status']['move'][target_dir_tmp].remove(rel_path)
+                    wa_data['file_status']['move'][target_dir].append(rel_path)
+                    print(f'Adding \'{arg}\' for move to #\'./{target_dir}\'.')
+                else:
+                    print(f'Skipping \'{arg}\' for move as it is already listed.')
+        else: # process rename
+            self.check_args_count(args, min=2, max=2)
+            src_file = args[0]
+            src_relpath_root = os.path.relpath(src_file, wa_root)
+            tgt_file = args[1]
+            tgt_relpath_root = os.path.relpath(tgt_file, wa_root)
+            if os.path.dirname(src_file) != os.path.dirname(tgt_file):
+                print(f'{bcolors.RED}Error: Source and target file should be in same directory for rename. May help to rename and move in separate steps.{bcolors.ENDC}')
+                exit(1)
+            self.init_json_hier(wa_data, dict, ['file_status', 'rename'])
+            wa_data['file_status']['rename'][src_relpath_root] = tgt_relpath_root
+            print(f'Adding \'{src_file}\' for rename to \'./{tgt_file}\'.')
 
         # save file status data
         with open(wa_data_file_path, 'w') as cache_file:
@@ -566,7 +681,7 @@ Bye.''')
         if sel_filelist:
             print('Adding files for check-in.')
             commit_text += '# Files for check-in:\n'
-            for file in sel_filelist:
+            for file in sorted(sel_filelist):
                 commit_text += f'#    ./{file}\n'
             commit_text += '#\n'
 
@@ -579,7 +694,7 @@ Bye.''')
         if sel_filelist:
             print('Adding files for delete.')
             commit_text += '# Files for delete:\n'
-            for file in sel_filelist:
+            for file in sorted(sel_filelist):
                 commit_text += f'#    ./{file}\n'
             commit_text += '#\n'
 
@@ -597,10 +712,23 @@ Bye.''')
         if sel_filelist:
             print('Adding files for move.')
             commit_text += '# Files for move:\n'
-            for target_dir in sel_filelist:
+            for target_dir in sorted(sel_filelist.keys()):
                 commit_text += f'#    Move to ./{target_dir}\n'
-                for file in sel_filelist[target_dir]:
+                for file in sorted(sel_filelist[target_dir]):
                     commit_text += f'#        ./{file}\n'
+            commit_text += '#\n'
+
+        ## prepare rename
+        sel_filelist = {}
+        if 'rename' in wa_data['file_status']:
+            for file in wa_data['file_status']['rename']:
+                src_relpath = os.path.relpath(os.path.join(wa_root, file), os.getcwd())
+                sel_filelist[src_relpath] = os.path.relpath(os.path.join(wa_root, wa_data['file_status']['rename'][file]), os.getcwd())
+        if sel_filelist:
+            print('Adding files for rename.')
+            commit_text += '# Files for rename:\n'
+            for file in sorted(sel_filelist.keys()):
+                commit_text += f'#    ./{file} -> ./{sel_filelist[file]}\n'
             commit_text += '#\n'
 
         ## prepare create
@@ -621,7 +749,7 @@ Bye.''')
 
     def push_action(self, args, wa_root, wa_data, tmp_filepath):
         user_desc = []
-        sel_filelist = {'checkin': [], 'delete': [], 'move': {}, 'create': []}
+        sel_filelist = {'checkin': [], 'delete': [], 'move': {}, 'rename': {}, 'create': []}
         with open(tmp_filepath, 'r') as tmp_file:
             list_mode = ''
             move_tgt_dir = ''
@@ -639,6 +767,11 @@ Bye.''')
                             sel_filelist[list_mode][move_tgt_dir] = []
                         else:
                             sel_filelist[list_mode][move_tgt_dir].append(line[1:].strip())
+                    elif list_mode == 'rename':
+                        parts = line[1:].split(' -> ')
+                        if len(parts) != 2:
+                            continue
+                        sel_filelist[list_mode][parts[0].strip()] = parts[1].strip()
                     else:
                         if   line.startswith('# Files for check-in:'):
                             list_mode = 'checkin'
@@ -646,6 +779,8 @@ Bye.''')
                             list_mode = 'delete'
                         elif line.startswith('# Files for move:'):
                             list_mode = 'move'
+                        elif line.startswith('# Files for rename:'):
+                            list_mode = 'rename'
                         elif line.startswith('# Files for create:'):
                             list_mode = 'create'
                 else:
@@ -677,6 +812,7 @@ Bye.''')
                         co_dir_list.append(dir_of_file)
                 self.execute_sos_command(['soscmd', 'co'], ['-C'] + co_dir_list)
                 self.execute_sos_command(['soscmd', 'move'], sel_filelist['move'][tgt_dir] + [tgt_dir])
+                self.execute_sos_command(['soscmd', 'ci'], [f'-aLog={user_desc}'] + co_dir_list)
                 for file in sel_filelist['move'][tgt_dir]:
                     file = os.path.relpath(file, wa_root)
                     tgt_dir_rel = os.path.relpath(tgt_dir, wa_root)
@@ -689,6 +825,20 @@ Bye.''')
                     rem_list.append(tgt_dir)
             for tgt_dir in rem_list:
                 del wa_data['file_status']['move'][tgt_dir]
+        if sel_filelist['rename']:
+            co_dir_list = []
+            for src_file in sel_filelist['rename']:
+                dir_of_file = os.path.dirname(src_file)
+                if dir_of_file and dir_of_file not in co_dir_list:
+                    co_dir_list.append(dir_of_file)
+            self.execute_sos_command(['soscmd', 'co'], ['-C'] + co_dir_list)
+            for src_file in sel_filelist['rename']:
+                self.execute_sos_command(['soscmd', 'rename'], [src_file, sel_filelist['rename'][src_file]])
+            self.execute_sos_command(['soscmd', 'ci'], [f'-aLog={user_desc}'] + co_dir_list)
+            for file in sel_filelist['rename']:
+                file = os.path.relpath(file, wa_root)
+                if file in wa_data['file_status']['rename']:
+                    del wa_data['file_status']['rename'][file]
         if sel_filelist['create']:
             self.execute_sos_command(['soscmd', 'create'], [f'-aDescription={user_desc}'] + sel_filelist['create'])
             for file in sel_filelist['create']:
@@ -771,7 +921,7 @@ Bye.''')
             stash_txt += f'# checkout ./{file_path} {file_rev}\n'
             stash_txt += '\n'.join(diff_data)
             stash_txt += '\n'
-            print(f'  {bcolors.BLUE}[checkout ]{bcolors.ENDC} \'{file_path}\'')
+            print(f'  {bcolors.GRAY}[checkout ]{bcolors.ENDC} \'{file_path}\'')
 
         #process cached data of files
         if 'create' in wa_data['file_status']:
@@ -782,16 +932,20 @@ Bye.''')
                     line_count = file_text.count('\n')
                     stash_txt += f'# create ./{file_path} {line_count}\n'
                     stash_txt += file_text
-                    print(f'  {bcolors.BLUE}[create   ]{bcolors.ENDC} \'./{file_path}\'')
+                    print(f'  {bcolors.GRAY}[create   ]{bcolors.ENDC} \'./{file_path}\'')
         if 'delete' in wa_data['file_status']:
             for file_path in wa_data['file_status']['delete']:
                 stash_txt += f'# delete ./{file_path}\n'
-                print(f'  {bcolors.BLUE}[delete   ]{bcolors.ENDC} \'./{file_path}\'')
+                print(f'  {bcolors.GRAY}[delete   ]{bcolors.ENDC} \'./{file_path}\'')
         if 'move' in wa_data['file_status']:
             for tgt_dir in wa_data['file_status']['move']:
                 for file_path in wa_data['file_status']['move'][tgt_dir]:
                     stash_txt += f'# move ./{file_path} ./{tgt_dir}\n'
-                    print(f'  {bcolors.BLUE}[move     ]{bcolors.ENDC} \'./{file_path}\'')
+                    print(f'  {bcolors.GRAY}[move     ]{bcolors.ENDC} \'./{file_path}\'')
+        if 'rename' in wa_data['file_status']:
+            for file_path in wa_data['file_status']['rename']:
+                stash_txt += f'# rename ./{file_path} ./{wa_data["file_status"]["rename"][file_path]}\n'
+                print(f'  {bcolors.GRAY}[rename   ]{bcolors.ENDC} \'./{file_path}\'')
         stash_txt += f'# info Marker : End of stash\n'
 
         # save the stash data
@@ -816,7 +970,7 @@ Bye.''')
                         stash_time = ' '.join(line.split()[4:])
                     elif line.startswith('# info Description '):
                         stash_desc = ' '.join(line.split()[4:])
-            stash_names_list.append(f'{bcolors.BLUE}[{stash_time}]{bcolors.ENDC} {file_name} {bcolors.YELLOW}{stash_desc}{bcolors.ENDC}')
+            stash_names_list.append(f'{bcolors.GRAY}[{stash_time}]{bcolors.ENDC} {file_name} {bcolors.YELLOW}{stash_desc}{bcolors.ENDC}')
         stash_names_list.sort(reverse=True)
         for name in stash_names_list:
             print(name)
@@ -859,6 +1013,7 @@ Bye.''')
         # process the stash
         wa_root = self.get_wa_root_path()
         pop_has_error = False # may use this for cleanup
+        merge_mode = 'user'
         with open(stash_path) as stash_file:
             ctx_data = {}
             txt_counter = 0
@@ -869,6 +1024,8 @@ Bye.''')
                         self.stash_pop_process(ctx_data)
                         if ctx_data['has_error']:
                             pop_has_error = True
+                        if ctx_data['merge_mode'] in ['sa', 'ga', 'wa']:
+                            merge_mode = ctx_data['merge_mode']
 
                     # start next command
                     line_parts = line.strip().split()
@@ -881,7 +1038,8 @@ Bye.''')
                         'txt': '',
                         'wa_root': wa_root,
                         'apply': apply,
-                        'has_error': False
+                        'has_error': False,
+                        'merge_mode': merge_mode
                     }
                     if line_parts[1] == 'info':
                         ctx_data['info'] = ' '.join(line_parts[4:])
@@ -892,6 +1050,8 @@ Bye.''')
                         txt_counter = int(ctx_data['count'])
                     elif line_parts[1] == 'move':
                         ctx_data['tgt'] = line_parts[3]
+                    elif line_parts[1] == 'rename':
+                        ctx_data['tgt'] = line_parts[3]
                 else:
                     ctx_data['txt'] += line
                     if txt_counter > 0:
@@ -901,7 +1061,7 @@ Bye.''')
         if   ctx_data['mode'] == 'info':
             print(f'{bcolors.YELLOW}{ctx_data["file"]:15} : {ctx_data["info"]}{bcolors.ENDC}')
         elif ctx_data['mode'] == 'checkout':
-            patch_args = ['--merge', '-uNt']
+            patch_args = ['--merge=diff3', '--no-backup-if-mismatch', '-uNt']
             if ctx_data['apply']:
                 dest_file_path = os.path.relpath(os.path.join(ctx_data['wa_root'], ctx_data['file']), os.getcwd())
                 if not os.path.exists(dest_file_path):
@@ -912,13 +1072,42 @@ Bye.''')
                 diff_file_path = self.generate_temp_filename()
                 with open(diff_file_path, 'w') as tmp_file:
                     tmp_file.write(ctx_data['txt'])
-                ret_code = self.execute_sos_command(['patch'], patch_args + [dest_file_path, diff_file_path], ret_code=True, chk_err=False, quiet=True)
-                os.remove(diff_file_path)
+                ret_code = self.execute_sos_command(['patch'], patch_args + ['--dry-run', dest_file_path, diff_file_path], ret_code=True, chk_err=False, quiet=True)
                 if ret_code:
-                    print(f'Merged #\'{ctx_data["file"]}\' with error(s).')
+                    print(f'Merging #\'{ctx_data["file"]}\' returned conflict(s).')
                     ctx_data['has_error'] = True
+                    user_merge_opt = None
+                    if ctx_data['merge_mode'] == 'user':
+                       merge_opt_prompt  = f'\nSelect the mode to resolve merge conflict(s):\n'
+                       merge_opt_prompt += f'{bcolors.YELLOW}g{bcolors.ENDC}  : Use GUI to resolve conflicts (default).\n'
+                       merge_opt_prompt += f'{bcolors.YELLOW}ga{bcolors.ENDC} : Use GUI to resolve all files with conflicts.\n'
+                       merge_opt_prompt += f'{bcolors.YELLOW}w{bcolors.ENDC}  : Write merge markers to file.\n'
+                       merge_opt_prompt += f'{bcolors.YELLOW}wa{bcolors.ENDC} : Write merge markers for all files with conflicts.\n'
+                       merge_opt_prompt += f'{bcolors.YELLOW}s{bcolors.ENDC}  : Skip resolving this file.\n'
+                       merge_opt_prompt += f'{bcolors.YELLOW}sa{bcolors.ENDC} : Skip resolving for all files with conflicts.\n'
+                       merge_opt_prompt += f'Select mode (g): '
+                       ctx_data['merge_mode'] = input(merge_opt_prompt)
+                    ctx_data['merge_mode'] = ctx_data['merge_mode'].strip()
+                    if   ctx_data['merge_mode'] in ['s', 'sa']:
+                        print(f'Skipping #\'{ctx_data["file"]}\' for merge.')
+                    elif ctx_data['merge_mode'] in ['w', 'wa']:
+                        self.execute_sos_command(['patch'], patch_args + [dest_file_path, diff_file_path], chk_err=False, quiet=True)
+                        print(f'Merged #\'{ctx_data["file"]}\' with conflicts.')
+                    else:
+                        file_name = os.path.basename(ctx_data['file'])
+                        base_filepath = self.generate_temp_filename() + f'__{file_name}.base'
+                        remote_filepath = self.generate_temp_filename() + f'__{file_name}.stash'
+                        self.execute_sos_command(['soscmd', 'exportrev'], [f'{dest_file_path}', f'-out{base_filepath}'], quiet=True)
+                        self.execute_sos_command(['soscmd', 'exportrev'], [f'{dest_file_path}/#/{ctx_data["rev"]}', f'-out{remote_filepath}'], quiet=True)
+                        self.execute_sos_command(['patch'], patch_args + [remote_filepath, diff_file_path], chk_err=False, quiet=True)
+
+                        subprocess.call([self.merge_tool, base_filepath, dest_file_path, remote_filepath, '--auto-merge'], stdout=subprocess.DEVNULL)
+                        os.remove(base_filepath)
+                        os.remove(remote_filepath)
+                        print(f'Merged #\'{ctx_data["file"]}\'.')
                 else:
                     print(f'Merged changes in #\'{ctx_data["file"]}\'.')
+                os.remove(diff_file_path)
             else:
                 file_name = os.path.basename(ctx_data['file'])
                 dest_relpath = os.path.relpath(os.path.join(ctx_data['wa_root'], ctx_data['file']), os.getcwd())
@@ -968,6 +1157,13 @@ Bye.''')
                 self.mv_sos([file_relpath, tgt_relpath])
             else:
                 print(f'Skipping move for #\'{ctx_data["file"]}\'.')
+        elif ctx_data['mode'] == 'rename':
+            if ctx_data['apply']:
+                file_relpath = os.path.relpath(os.path.join(ctx_data['wa_root'], ctx_data['file']), os.getcwd())
+                tgt_relpath = os.path.relpath(os.path.join(ctx_data['wa_root'], ctx_data['tgt']), os.getcwd())
+                self.mv_sos([file_relpath, tgt_relpath])
+            else:
+                print(f'Skipping rename for #\'{ctx_data["file"]}\'.')
 
     def stash_drop(self, args):
         self.setup_user_cache()
@@ -1010,25 +1206,32 @@ Bye.''')
 
         # get file info from SOS
         file_status = {}
-        cur_filelist = self.execute_sos_command(['soscmd', 'status'], ['-f%C%S %P'] + args, ret_text=True, quiet=True)
+        cur_filelist = self.execute_sos_command(['soscmd', 'status'], ['-f%C%S%R %P'] + args, ret_text=True, quiet=True)
         for file_info in cur_filelist:
             if file_info.startswith('*'):
                 continue
             file_info = file_info.split()
-            if file_info[1] in self.ign_filelist:
+            file_info_change_sts = file_info[0][0]
+            file_info_state = file_info[0][1]
+            file_info_rev = file_info[0][2]
+            file_path = file_info[1]
+
+            if file_path.endswith(tuple(self.ign_file_suffix)):
                 continue
-            file_info[1] = self.remove_prefix(file_info[1], './')
+            file_path = self.remove_prefix(file_path, './')
 
             file_attr = []
-            if file_info[0][0] == '-': # check if changed
+            if file_info_change_sts == '-': # check if changed
                 file_attr.append('unchanged')
-            elif file_info[0][0] == '!': # check if deleted
+            elif file_info_change_sts == '!': # check if deleted
                 file_attr.append('deleted')
-            if file_info[0][1] == '?': # check if unmanaged
+            if file_info_state == '?': # check if unmanaged
                 file_attr.append('unmanaged')
             else:
                 file_attr.append('checkout')
-            file_status[file_info[1]] = file_attr
+            if file_info_rev == 'R': # check if latest version in RSO
+                file_attr.append('resolve')
+            file_status[file_path] = file_attr
 
         # get file info from local cache
         self.setup_user_cache()
@@ -1069,6 +1272,24 @@ Bye.''')
                                 file_attr = file_status[target_file_path]
                             file_attr.append(f'{key}+')
                             file_status[target_file_path] = file_attr
+        for key in ['rename']:
+            if key not in wa_data['file_status']:
+                continue
+            for item in wa_data['file_status'][key]:
+                if not scope_paths or item.startswith(tuple(scope_paths)):
+                    file_attr = []
+                    if item in file_status:
+                        file_attr = file_status[item]
+                    if key == 'rename':
+                        file_attr.append(f'{key}-')
+                        file_status[item] = file_attr
+
+                        target_file_path = wa_data['file_status'][key][item]
+                        file_attr = []
+                        if target_file_path in file_status:
+                            file_attr = file_status[target_file_path]
+                        file_attr.append(f'{key}+')
+                        file_status[target_file_path] = file_attr
 
         unmanaged_files = []
         hdr_printed = False
@@ -1085,8 +1306,9 @@ Bye.''')
                 rel_path += '/'
             file_attr = [attr for attr in file_attr if attr not in ['unmanaged']]
             prefix = file_attr.pop(0)
-            suffix = f' {bcolors.GRAY}(' + ' '.join(file_attr) + f'){bcolors.ENDC}' if file_attr else ''
-            print(f'  {bcolors.BLUE}[{prefix:9}]{bcolors.ENDC} ./{rel_path}{suffix}')
+            file_attr = [f'{bcolors.RED}{attr}{bcolors.ENDC}' if attr in ['resolve'] else f'{bcolors.GRAY}{attr}{bcolors.ENDC}' for attr in file_attr]
+            suffix = f' {bcolors.GRAY}({bcolors.ENDC}' + ' '.join(file_attr) + f'{bcolors.GRAY}){bcolors.ENDC}' if file_attr else ''
+            print(f'  {bcolors.GRAY}[{prefix:9}]{bcolors.ENDC} ./{rel_path}{suffix}')
 
         if unmanaged_files:
             print(f'\nUntracked files:')
@@ -1097,7 +1319,7 @@ Bye.''')
                 suffix = f' {bcolors.GRAY}(' + ' '.join(file_attr) + f'){bcolors.ENDC}' if file_attr else ''
                 if os.path.isdir(rel_path):
                     rel_path += '/'
-                print(f'  {bcolors.BLUE}[untracked]{bcolors.ENDC} ./{rel_path}{suffix}')
+                print(f'  {bcolors.GRAY}[untracked]{bcolors.ENDC} ./{rel_path}{suffix}')
 
     def check_args_count(self, args, min=-1, max=-1):
         len_args = len(args)
@@ -1127,7 +1349,7 @@ Bye.''')
         command = sos_command + args
         if not quiet:
             print(f'{bcolors.GRAY}Run cmd: {" ".join(command)}{bcolors.ENDC}')
-        #if sos_command[0] in 'soscmd' and sos_command[1] in ['co', 'ci', 'create', 'delete', 'move', 'merge', 'usebranch', 'update', 'newworkarea', 'discardco', 'deleteworkarea']:
+        #if sos_command[0] in 'soscmd' and sos_command[1] in ['co', 'ci', 'create', 'delete', 'move', 'merge', 'usebranch', 'update', 'newworkarea', 'discardco', 'deleteworkarea', 'rename']:
         #    return
         try:
             result = subprocess.run(command, check=chk_err, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -1136,7 +1358,7 @@ Bye.''')
                 print(out_str)
             if ret_text:
                 out_str_a = out_str.splitlines()
-                while out_str_a and out_str_a[0].startswith(tuple(['Invoking SOS', '!! Warning:', '** The flags'])):
+                while out_str_a and (not out_str_a[0] or out_str_a[0].isspace() or out_str_a[0].startswith(tuple(['Invoking SOS', '!! Warning:', '** The flags']))):
                     out_str_a.pop(0)
                 if ret_code:
                     return result.returncode, out_str_a
@@ -1146,6 +1368,9 @@ Bye.''')
                 return result.returncode
         except subprocess.CalledProcessError as e:
             print(f'{bcolors.RED}Error: Failed to execute command: {e}{bcolors.ENDC}')
+            exit(1)
+        except FileNotFoundError as e:
+            print(f'{bcolors.RED}Error: Invalid environment: {e}{bcolors.ENDC}')
             exit(1)
 
     def generate_temp_filename(self, only_randstr=False):
